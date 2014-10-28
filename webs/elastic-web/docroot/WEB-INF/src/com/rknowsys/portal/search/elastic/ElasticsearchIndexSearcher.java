@@ -1,26 +1,31 @@
-/**
- * Copyright (c) 2000-present Liferay, Inc. All rights reserved.
+/*******************************************************************************
+ * Copyright (c) 2014 R-Knowsys Technologies 
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or any later version.
  *
- * This library is free software; you can redistribute it and/or modify it under
- * the terms of the GNU Lesser General Public License as published by the Free
- * Software Foundation; either version 2.1 of the License, or (at your option)
- * any later version.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * This library is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
- * FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public License for more
- * details.
- */
-
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see `<http://www.gnu.org/licenses/>`.
+ *******************************************************************************/
 package com.rknowsys.portal.search.elastic;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-
+import com.liferay.portal.kernel.log.Log;
+import com.liferay.portal.kernel.log.LogFactoryUtil;
+import com.liferay.portal.kernel.search.*;
+import com.liferay.portal.kernel.search.facet.Facet;
+import com.liferay.portal.kernel.search.facet.MultiValueFacet;
+import com.liferay.portal.kernel.search.facet.RangeFacet;
+import com.liferay.portal.kernel.search.facet.collector.FacetCollector;
+import com.liferay.portal.kernel.util.StringPool;
+import com.rknowsys.portal.search.elastic.client.ClientFactory;
+import com.rknowsys.portal.search.elastic.facet.ElasticsearchFacetFieldCollector;
+import com.rknowsys.portal.search.elastic.facet.LiferayFacetParser;
 import org.elasticsearch.action.ActionFuture;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchRequestBuilder;
@@ -31,29 +36,14 @@ import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.SearchHits;
+import org.elasticsearch.search.facet.FacetBuilder;
 import org.elasticsearch.search.facet.Facets;
+import org.elasticsearch.search.sort.SortBuilder;
+import org.elasticsearch.search.sort.SortBuilders;
+import org.elasticsearch.search.sort.SortOrder;
 
-import com.liferay.portal.kernel.search.Document;
-import com.liferay.portal.kernel.search.DocumentImpl;
-import com.liferay.portal.kernel.search.Field;
-import com.liferay.portal.kernel.search.Hits;
-import com.liferay.portal.kernel.search.HitsImpl;
-import com.liferay.portal.kernel.search.IndexSearcher;
-import com.liferay.portal.kernel.search.Query;
-import com.liferay.portal.kernel.search.QueryConfig;
-import com.liferay.portal.kernel.search.SearchContext;
-import com.liferay.portal.kernel.search.SearchException;
-import com.liferay.portal.kernel.search.Sort;
-import com.liferay.portal.kernel.search.facet.Facet;
-import com.liferay.portal.kernel.search.facet.collector.FacetCollector;
-import com.liferay.portal.kernel.util.StringPool;
-import com.rknowsys.portal.search.elastic.client.ClientFactory;
-import com.rknowsys.portal.search.elastic.facet.ElasticsearchFacetFieldCollector;
+import java.util.*;
 
-/**
- * @author Michael C. Han
- * @author Milen Dyankov
- */
 public class ElasticsearchIndexSearcher implements IndexSearcher {
 
     private ClientFactory clientFactory;
@@ -63,14 +53,22 @@ public class ElasticsearchIndexSearcher implements IndexSearcher {
         try {
             Client client = getClient();
 
-            SearchRequestBuilder searchRequestBuilder = client.prepareSearch(
+            SearchRequestBuilder searchRequestBuilder = client.prepareSearch("liferay_" +
                     String.valueOf(searchContext.getCompanyId()));
 
             QueryBuilder queryBuilder = QueryBuilders.queryString(query.toString());
 
             searchRequestBuilder.setQuery(queryBuilder);
 
-            searchRequestBuilder.setTypes("LiferayDocuments");
+            _log.info("Query String  " + queryBuilder.toString());
+
+            searchRequestBuilder.setTypes("documents");
+
+            addFacetCollectorsToSearch(searchContext, searchRequestBuilder);
+
+            addSortToSearch(searchContext.getSorts(), searchRequestBuilder);
+
+            searchRequestBuilder.setFrom(searchContext.getStart()).setSize(searchContext.getEnd());
 
             SearchRequest searchRequest = searchRequestBuilder.request();
 
@@ -94,20 +92,27 @@ public class ElasticsearchIndexSearcher implements IndexSearcher {
         }
     }
 
+
     @Override
     public Hits search(String searchEngineId, long companyId, Query query, Sort[] sort, int start, int end) throws SearchException {
 
         try {
             Client client = getClient();
 
-            SearchRequestBuilder searchRequestBuilder = client.prepareSearch(
+            SearchRequestBuilder searchRequestBuilder = client.prepareSearch("liferay_" +
                     String.valueOf(companyId));
 
             QueryBuilder queryBuilder = QueryBuilders.queryString(query.toString());
 
+            _log.info("Query String" + queryBuilder.toString());
+
             searchRequestBuilder.setQuery(queryBuilder);
 
-            searchRequestBuilder.setTypes("LiferayDocuments");
+            searchRequestBuilder.setTypes("documents");
+
+            addSortToSearch(sort, searchRequestBuilder);
+
+            searchRequestBuilder.setFrom(start).setSize(end);
 
             SearchRequest searchRequest = searchRequestBuilder.request();
 
@@ -158,13 +163,20 @@ public class ElasticsearchIndexSearcher implements IndexSearcher {
         for (String fieldName :
                 source.keySet()) {
 
-            String val = (String) source.get(fieldName);
-            Field field = new Field(
-                    fieldName,
-                    new String[]{val}
-            );
+            Object val = source.get(fieldName);
+            if (val == null) {
+                Field field = new Field(fieldName,(String)null);
+                document.add(field);
+            } else if (val instanceof List) {
+                String[] values = ((List<String>) val).toArray(new String[((List<String>) val).size()]);
+                Field field = new Field(fieldName,values);
+                document.add(field);
+            } else {
+                Field field = new Field(fieldName,new String[]{val.toString()});
+                document.add(field);
+            }
 
-            document.add(field);
+
 
         }
 
@@ -220,6 +232,39 @@ public class ElasticsearchIndexSearcher implements IndexSearcher {
         }
     }
 
+    private void addFacetCollectorsToSearch(SearchContext searchContext, SearchRequestBuilder searchRequestBuilder) {
+        Map<String, Facet> facets = searchContext.getFacets();
+        for (Facet facet : facets.values()) {
+            FacetBuilder facetBuilder = null;
+            if (facet instanceof MultiValueFacet) {
+                facetBuilder = LiferayFacetParser.getFacetBuilder((MultiValueFacet) facet);
+            } else if (facet instanceof RangeFacet) {
+                facetBuilder = LiferayFacetParser.getFacetBuilder((RangeFacet) facet);
+            }
+            if (facetBuilder != null) {
+                searchRequestBuilder.addFacet(facetBuilder);
+            }
+        }
+
+    }
+
+    private void addSortToSearch(Sort[] sorts, SearchRequestBuilder searchRequestBuilder) {
+        if (sorts == null) {
+            return;
+        }
+        for (Sort sort : sorts) {
+            SortBuilder sortBuilder = null;
+            if (sort.getType() == Sort.SCORE_TYPE) {
+                sortBuilder = SortBuilders.scoreSort();
+            } else {
+                 sortBuilder = SortBuilders.fieldSort(sort.getFieldName()+"_sortable").ignoreUnmapped(true)
+                         .order(sort.isReverse() ? SortOrder.DESC : SortOrder.ASC);
+            }
+            searchRequestBuilder.addSort(sortBuilder);
+
+        }
+    }
+
     public void setClientFactory(ClientFactory clientFactory) {
         this.clientFactory = clientFactory;
     }
@@ -227,6 +272,8 @@ public class ElasticsearchIndexSearcher implements IndexSearcher {
     private Client getClient() {
         return clientFactory.getClient();
     }
+
+    private static final Log _log = LogFactoryUtil.getLog(ElasticsearchIndexSearcher.class);
 
 
 }

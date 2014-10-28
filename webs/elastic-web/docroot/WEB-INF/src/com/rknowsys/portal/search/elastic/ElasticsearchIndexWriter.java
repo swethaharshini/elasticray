@@ -1,17 +1,18 @@
-/**
- * Copyright (c) 2000-present Liferay, Inc. All rights reserved.
+/*******************************************************************************
+ * Copyright (c) 2014 R-Knowsys Technologies 
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or any later version.
  *
- * This library is free software; you can redistribute it and/or modify it under
- * the terms of the GNU Lesser General Public License as published by the Free
- * Software Foundation; either version 2.1 of the License, or (at your option)
- * any later version.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * This library is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
- * FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public License for more
- * details.
- */
-
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see `<http://www.gnu.org/licenses/>`.
+ *******************************************************************************/
 package com.rknowsys.portal.search.elastic;
 
 import java.io.IOException;
@@ -20,6 +21,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Future;
 
+import com.liferay.portal.kernel.log.Log;
+import com.liferay.portal.kernel.log.LogFactoryUtil;
+import com.liferay.portal.kernel.util.GetterUtil;
 import org.elasticsearch.action.bulk.BulkRequestBuilder;
 import org.elasticsearch.action.bulk.BulkResponse;
 import org.elasticsearch.action.delete.DeleteRequestBuilder;
@@ -44,21 +48,19 @@ import com.liferay.portal.kernel.util.LocaleUtil;
 import com.liferay.portal.kernel.util.Validator;
 import com.rknowsys.portal.search.elastic.client.ClientFactory;
 
-/**
- * @author Michael C. Han
- * @author Milen Dyankov
- */
 public class ElasticsearchIndexWriter implements IndexWriter {
 
     private ClientFactory clientFactory;
+
+    private static final Log _log = LogFactoryUtil.getLog(ElasticsearchIndexWriter.class);
+
 
     @Override
     public void addDocument(SearchContext searchContext, Document document)
             throws SearchException {
         try {
             UpdateRequestBuilder updateRequestBuilder =
-                    getUpdateRequestBuilder(
-                            "LiferayDocuments", searchContext, document);
+                    getUpdateRequestBuilder(searchContext, document);
 
             Future<UpdateResponse> future = updateRequestBuilder.execute();
 
@@ -83,8 +85,7 @@ public class ElasticsearchIndexWriter implements IndexWriter {
 
             for (Document document : documents) {
                 UpdateRequestBuilder updateRequestBuilder =
-                        getUpdateRequestBuilder(
-                                "LiferayDocuments", searchContext, document);
+                        getUpdateRequestBuilder(searchContext, document);
 
                 bulkRequestBuilder.add(updateRequestBuilder);
             }
@@ -108,8 +109,8 @@ public class ElasticsearchIndexWriter implements IndexWriter {
             Client client = getClient();
 
             DeleteRequestBuilder deleteRequestBuilder = client.prepareDelete(
-                    String.valueOf(searchContext.getCompanyId()),
-                    "LiferayDocuments", uid);
+                    String.valueOf("liferay_" + searchContext.getCompanyId()),
+                    "documents", uid);
 
             Future<DeleteResponse> future = deleteRequestBuilder.execute();
 
@@ -133,8 +134,8 @@ public class ElasticsearchIndexWriter implements IndexWriter {
             for (String uid : uids) {
                 DeleteRequestBuilder deleteRequestBuilder =
                         client.prepareDelete(
-                                String.valueOf(searchContext.getCompanyId()),
-                                "LiferayDocuments", uid);
+                                String.valueOf("liferay_" + searchContext.getCompanyId()),
+                                "documents", uid);
 
                 bulkRequestBuilder.add(deleteRequestBuilder);
             }
@@ -185,8 +186,7 @@ public class ElasticsearchIndexWriter implements IndexWriter {
 
         try {
             UpdateRequestBuilder updateRequestBuilder =
-                    getUpdateRequestBuilder(
-                            "LiferayDocuments", searchContext, document);
+                    getUpdateRequestBuilder(searchContext, document);
 
             Future<UpdateResponse> future = updateRequestBuilder.execute();
 
@@ -211,7 +211,7 @@ public class ElasticsearchIndexWriter implements IndexWriter {
             for (Document document : documents) {
                 UpdateRequestBuilder updateRequestBuilder =
                         getUpdateRequestBuilder(
-                                "LiferayDocuments", searchContext, document);
+                                 searchContext, document);
 
                 bulkRequestBuilder.add(updateRequestBuilder);
             }
@@ -279,12 +279,47 @@ public class ElasticsearchIndexWriter implements IndexWriter {
             String name = field.getName();
 
             if (!field.isLocalized()) {
-                for (String value : field.getValues()) {
-                    if (Validator.isNull(value)) {
-                        continue;
-                    }
 
-                    xContentBuilder.field(name, value.trim());
+                if (field.isNumeric()) {
+                    Class clazz = field.getNumericClass();
+                    if (clazz.equals(Double.class)) {
+                        double[] values = GetterUtil.getDoubleValues(field.getValues());
+                        if (values.length > 1) {
+                            xContentBuilder.field(name, values);
+                        } else {
+                            xContentBuilder.field(name,values[0]);
+                        }
+                    }
+                    else if (clazz.equals(Float.class)) {
+                        float[] values = GetterUtil.getFloatValues(field.getValues());
+                        if (values.length > 1) {
+                            xContentBuilder.field(name, values);
+                        } else {
+                            xContentBuilder.field(name,values[0]);
+                        }
+                    }
+                    else if (clazz.equals(Integer.class)) {
+                        int[] values = GetterUtil.getIntegerValues(field.getValues());
+                        if (values.length > 1) {
+                            xContentBuilder.field(name, values);
+                        } else {
+                            xContentBuilder.field(name,values[0]);
+                        }
+                    } else {
+                        long[] values = GetterUtil.getLongValues(field.getValues());
+                        if (values.length > 1) {
+                            xContentBuilder.field(name, values);
+                        } else {
+                            xContentBuilder.field(name,values[0]);
+                        }
+                    }
+                } else {
+
+                    if (field.getValues().length > 1) {
+                        xContentBuilder.field(name, field.getValues());
+                    } else {
+                        xContentBuilder.field(name, field.getValue());
+                    }
                 }
             } else {
                 Map<Locale, String> localizedValues =
@@ -323,13 +358,13 @@ public class ElasticsearchIndexWriter implements IndexWriter {
     }
 
     private UpdateRequestBuilder getUpdateRequestBuilder(
-            String documentType, SearchContext searchContext, Document document)
+            SearchContext searchContext, Document document)
             throws IOException {
 
         Client client = getClient();
 
         UpdateRequestBuilder updateRequestBuilder = client.prepareUpdate(
-                String.valueOf(searchContext.getCompanyId()), documentType,
+                String.valueOf("liferay_" + searchContext.getCompanyId()), "documents",
                 document.getUID());
 
         String elasticSearchDocument = getElasticsearchDocument(document);
@@ -339,6 +374,7 @@ public class ElasticsearchIndexWriter implements IndexWriter {
 
         return updateRequestBuilder;
     }
+
 
 
 }
